@@ -1,0 +1,563 @@
+*Frontend (Client-side)*
+*`public/index.html`*
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Question Answering System</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="root"></div>
+    <script src="index.js"></script>
+</body>
+</html>
+*`src/index.js`*
+jsx
+import React from 'react';
+import ReactDOM from 'react-dom';
+import App from './App';
+ReactDOM.render(
+    <React.StrictMode>
+        <App />
+    </React.StrictMode>,
+    document.getElementById('root')
+);
+*`src/App.js`*
+jsx
+import React, { useState } from 'react';
+import PdfUploader from './PdfUploader';
+import QuestionAsker from './QuestionAsker';
+import AnswerDisplay from './AnswerDisplay';
+
+const App = () => {
+    const [pdfFile, setPdfFile] = useState(null);
+    const [question, setQuestion] = useState('');
+    const [answer, setAnswer] = useState('');
+
+  const handlePdfUpload = file => {
+        setPdfFile(file);
+    };
+   const handleQuestionAsk = question => {
+        setQuestion(question);
+        fetch('/ask-question', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ question, pdfFile }),
+        })
+            .then(response => response.json())
+            .then(data => setAnswer(data.answer));
+    };
+return (
+        <div>
+            <PdfUploader onUpload={handlePdfUpload} />
+            <QuestionAsker onAsk={handleQuestionAsk} />
+            <AnswerDisplay answer={answer} />
+        </div>
+    );
+};
+export default App;
+*`src/PdfUploader.js`*
+jsx
+import React, { useState } from 'react';
+import { useDropzone } from 'react-dropzone';
+
+const PdfUploader = ({ onUpload }) => {
+    const [file, setFile] = useState(null);
+    const { getRootProps, getInputProps, isDragActive } = useDropzone({
+        onDrop: acceptedFiles => {
+            setFile(acceptedFiles[0]);
+            onUpload(acceptedFiles[0]);
+        },
+    });
+
+    return (
+        <div {...getRootProps()} className="dropzone">
+            <input {...getInputProps()} />
+            {
+                isDragActive ? <p>Drop the PDF file here ...</p> : <p>Drag 'n' drop or click to upload PDF</p>
+            }
+            {file && <p>File uploaded: {file.name}</p>}
+        </div>
+    );
+};
+
+export default PdfUploader;
+*`src/QuestionAsker.js`*
+jsx
+import React, { useState } from 'react';
+
+const QuestionAsker = ({ onAsk }) => {
+    const [question, setQuestion] = useState('');
+
+    const handleSubmit = e => {
+        e.preventDefault();
+        onAsk(question);
+    };
+
+    return (
+        <form onSubmit={handleSubmit}>
+            <input
+                type="text"
+                value={question}
+                onChange={e => setQuestion(e.target.value)}
+                placeholder="Ask a question"
+            />
+            <button type="submit">Ask</button>
+        </form>
+    );
+};
+
+export default QuestionAsker;
+*`src/AnswerDisplay.js`*
+jsx
+import React from 'react';
+const AnswerDisplay = ({ answer }) => {
+    return (
+        <div>
+            <h2>Answer</h2>
+            <p>{answer}</p>
+        </div>
+    );
+};
+export default AnswerDisplay;
+*Backend (Server-side)*
+*`server/index.js`*
+const express = require('express');
+const app = express();
+const port = 3001;
+const mongoose = require('mongoose');
+const pdfParser = require('pdf-parser');
+const natural = require('natural');
+const StanfordCoreNLP = require('stanford-core-nlp');
+
+mongoose.connect('mongodb://localhost/pdf-qa', { useNewUrlParser: true, useUnifiedTopology: true });
+
+const pdfSchema = new mongoose.Schema({
+    filename: String,
+    size: Number,
+    uploadDate: Date,
+    textContent: String,
+});
+
+const questionSchema = new mongoose.Schema({
+    pdfFileId: String,
+    questionText: String,
+    answerText: String,
+});
+
+const Pdf = mongoose.model('Pdf', pdfSchema);
+const Question = mongoose.model('Question', questionSchema);
+
+app.post('/upload-pdf', (req, res) => {
+    const pdfFile = req.files.pdf;
+    const pdfText = pdfParser(pdfFile).
+<--*Backend side source code..................... -->
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import JSONResponse
+from pymongo import MongoClient
+import pymupdf
+from langchain import LLaMAIndex
+import datetime
+import os
+import uuid
+
+# Initialize FastAPI app
+app = FastAPI()
+
+# Connect to MongoDB
+client = MongoClient("mongodb://localhost:27017/")
+db = client["pdf-qa"]
+pdfs_collection = db["pdfs"]
+questions_collection = db["questions"]
+
+# Initialize LLaMA index
+llama_index = LLaMAIndex()
+
+# Define Pydantic models
+class PDF(BaseModel):
+    filename: str
+    upload_date: datetime.datetime
+    text: str
+
+class Question(BaseModel):
+    pdf_id: str
+    question: str
+    answer: str
+
+# Endpoint for uploading PDF documents
+@app.post("/upload-pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    # Save uploaded PDF to local directory
+    file_path = f"{uuid.uuid4()}.pdf"
+    with open(file_path, "wb") as f:
+        f.write(file.file.read())
+
+    # Extract text from uploaded PDF using PyMuPDF
+    pdf_text = ""
+    with pymupdf.open(file_path, "rb") as pdf:
+        for page in pdf:
+            pdf_text += page.extract_text()
+
+    # Store PDF information in MongoDB
+    pdf_id = pdfs_collection.insert_one({
+        "filename": file.filename,
+        "upload_date": datetime.datetime.now(),
+        "text": pdf_text
+    }).inserted_id
+
+    # Remove temporary PDF file
+    os.remove(file_path)
+
+    return JSONResponse(content={"pdf_id": str(pdf_id)}, media_type="application/json")
+
+# Endpoint for receiving questions and returning answers
+@app.post("/ask-question")
+async def ask_question(question: Question):
+    # Retrieve PDF text from MongoDB
+    pdf_text = pdfs_collection.find_one({"_id": question.pdf_id})["text"]
+
+    # Process natural language question using LLaMA index
+    answer = llama_index.answer_question(question.question, pdf_text)
+
+    # Store question and answer in MongoDB
+    questions_collection.insert_one({
+        "pdf_id": question.pdf_id,
+        "question": question.question,
+        "answer": answer
+    })
+
+    return JSONResponse(content={"answer": answer}, media_type="application/json")
+```
+*Requirements:*if then install it..
+
+- FastAPI (`pip install fastapi`)
+- PyMuPDF (`pip install pymupdf`)
+- LangChain (`pip install langchain`)
+- Pydantic (`pip install pydantic`)
+- MongoDB (`pip install pymongo`)
+
+*Run the application:*
+
+1. Install the required dependencies.
+2. Start the MongoDB server.
+3. Run the application using `uvicorn main:app --host 0.0.0.0 --port 8000`.
+4. Use a tool like `curl` or a REST client to test the endpoints.
+- Ask a question based on the uploaded PDF:
+```
+bash
+curl -X POST \
+  http://localhost:8000/ask-question \
+  -H 'Content-Type: application/json' \
+  -d '{"pdf_id": "PDF_ID", "question": "What is the main topic of this PDF?"}'
+*Fronted codes*
+*Components*
+1. `UploadPage.js`
+2. `QuestionPage.js`
+3. `Loader.js` (for feedback mechanism)
+4. `ErrorMessage.js` (for error messages)
+
+*UploadPage.js*
+jsx
+import React, { useState } from 'react';
+import axios from 'axios';
+
+const UploadPage = () => {
+  const [file, setFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleFileChange = (event) => {
+    setFile(event.target.files[0]);
+  };
+
+  const handleUpload = () => {
+    setUploading(true);
+    const formData = new FormData();
+    formData.append('file', file);
+
+    axios.post('/upload-pdf', formData)
+      .then((response) => {
+        setUploading(false);
+        // Redirect to QuestionPage
+      })
+      .catch((error) => {
+        setUploading(false);
+        setError(error.message);
+      });
+  };
+
+  return (
+    <div>
+      <h1>Upload PDF Document</h1>
+      <input type="file" onChange={handleFileChange} />
+      {uploading ? <Loader /> : <button onClick={handleUpload}>Upload</button>}
+      {error ? <ErrorMessage message={error} /> : null}
+    </div>
+  );
+};
+export default UploadPage;
+*QuestionPage.js*
+```
+jsx
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+const QuestionPage = () => {
+  const [pdfId, setPdfId] = useState('');
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    // Get PDF ID from URL parameter
+    const urlParams = new URLSearchParams(window.location.search);
+    const pdfId = urlParams.get('pdfId');
+    setPdfId(pdfId);
+  }, []);
+const handleQuestionChange = (event) => {
+    setQuestion(event.target.value);
+  };
+const handleAskQuestion = () => {
+    axios.post('/ask-question', {
+      pdfId,
+      question,
+    })
+      .then((response) => {
+        setAnswer(response.data.answer);
+      })
+      .catch((error) => {
+        setError(error.message);
+      });
+  };
+
+  return (
+    <div>
+      <h1>Ask a Question</h1>
+      <input type="text" value={question} onChange={handleQuestionChange} />
+      <button onClick={handleAskQuestion}>Ask</button>
+      {answer ? <p>Answer: {answer}</p> : null}
+      {error ? <ErrorMessage message={error} /> : null}
+    </div>
+  );
+};
+
+export default QuestionPage;
+*Loader.js*
+jsx
+import React from 'react';
+
+const Loader = () => {
+  return (
+    <div>
+      <p>Uploading...</p>
+      <div className="loader"></div>
+    </div>
+  );
+};
+*ErrorMessage.js*
+jsx
+import React from 'react';
+
+const ErrorMessage = ({ message }) => {
+  return (
+    <div>
+      <p style={{ color: 'red' }}>{message}</p>
+    </div>
+  );
+};
+ErrorMessage;
+*App.js*
+jsx
+import React from 'react';
+import { BrowserRouter, Route, Switch } from 'react-router-dom';
+import UploadPage from './UploadPage';
+import QuestionPage from './QuestionPage';
+
+const App = () => {
+  return (
+    <BrowserRouter>
+      <Switch>
+        <Route path="/" exact component={UploadPage} />
+        <Route path="/question" component={QuestionPage} />
+      </Switch>
+    </BrowserRouter>
+  );
+};
+
+
+
+*index.html*
+```
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Question Answering System</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="root"></div>
+    <script src="index.js"></script>
+</body>
+</html>
+*index.js*
+jsx
+import React from 'react';
+import ReactDOM from 'react-dom';
+import App from './App';
+
+ReactDOM.render(
+    <React.StrictMode>
+        <App />
+    </React.StrictMode>,
+    document.getElementById('root')
+);
+*App.js*
+jsx
+import React from 'react';
+import { BrowserRouter, Route, Switch } from 'react-router-dom';
+import UploadPage from './UploadPage';
+import QuestionPage from './QuestionPage';
+
+const App = () => {
+    return (
+        <BrowserRouter>
+            <Switch>
+                <Route path="/" exact component={UploadPage} />
+                <Route path="/question" component={QuestionPage} />
+            </Switch>
+        </BrowserRouter>
+    );
+};
+
+export default App;
+*UploadPage.js*
+jsx
+import React, { useState } from 'react';
+import axios from 'axios';
+
+const UploadPage = () => {
+    const [file, setFile] = useState(null);
+    const [uploading, setUploading] = useState(false);
+    const [error, setError] = useState(null);
+
+    const handleFileChange = (event) => {
+        setFile(event.target.files[0]);
+    };
+
+    const handleUpload = () => {
+        setUploading(true);
+        const formData = new FormData();
+        formData.append('file', file);
+
+        axios.post('/upload-pdf', formData)
+            .then((response) => {
+                setUploading(false);
+                // Redirect to QuestionPage
+            })
+            .catch((error) => {
+                setUploading(false);
+                setError(error.message);
+            });
+    };
+
+    return (
+        <div className="upload-page">
+            <h1>Upload PDF Document</h1>
+            <input type="file" onChange={handleFileChange} />
+            {uploading ? (
+                <button className="loading-button">Uploading...</button>
+            ) : (
+                <button className="upload-button" onClick={handleUpload}>
+                    Upload
+                </button>
+            )}
+            {error ? (
+                <p className="error-message">{error}</p>
+            ) : null}
+        </div>
+    );
+};
+
+export default UploadPage;
+*QuestionPage.js*
+jsx
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+const QuestionPage = () => {
+    const [pdfId, setPdfId] = useState('');
+    const [question, setQuestion] = useState('');
+    const [answer, setAnswer] = useState('');
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        // Get PDF ID from URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const pdfId = urlParams.get('pdfId');
+        setPdfId(pdfId);
+    }, []);
+
+    const handleQuestionChange = (event) => {
+        setQuestion(event.target.value);
+    };
+
+    const handleAskQuestion = () => {
+        axios.post('/ask-question', {
+            pdfId,
+            question,
+        })
+            .then((response) => {
+                setAnswer(response.data.answer);
+            })
+            .catch((error) => {
+                setError(error.message);
+            });
+    };
+
+    return (
+        <div className="question-page">
+            <h1>Ask a Question</h1>
+            <input
+                type="text"
+                value={question}
+                onChange={handleQuestionChange}
+                placeholder="Enter your question"
+            />
+            <button className="ask-button" onClick={handleAskQuestion}>
+                Ask
+            </button>
+            {answer ? (
+                <p className="answer">{answer}</p>
+            ) : null}
+            {error ? (
+                <p className="error-message">{error}</p>
+            ) : null}
+        </div>
+    );
+};
+*styles.css*
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+}
+
+.upload-page {
+    width: 80%;
+    margin: 40px auto;
+    text-align: center;
+}
+
+.upload-page h1 {
+    margin-bottom: 20px;
+}
+
+.upload-page input[type='file'] {
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 5px
+.
+
